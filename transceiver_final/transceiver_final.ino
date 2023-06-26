@@ -557,7 +557,7 @@ void setup() {
   while(1) {
     chklist_wait();
     if(radio.begin()) {
-      radio.enableDynamicPayloads();
+      //radio.enableDynamicPayloads();
       radio.setChannel(radio_channel);
       radio.setDataRate((rf24_datarate_e) radio_rate);
       radio.openWritingPipe(radio_addr_trx);
@@ -735,6 +735,7 @@ void loop() {
       Serial.println();
 #endif
 
+      //radio.setPayloadSize(trx_len);
       if(radio.write(trx_buf, trx_len) == false) {
         oled.tty_y = 7; oled.text_invert = true;
         if(!send_fail) {
