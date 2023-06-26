@@ -739,7 +739,6 @@ void loop() {
         oled.tty_x = 0; oled.tty_y = 7; oled.text_invert = true;
         printf_P(PSTR("Resp. failure (ID %04X)"), pktid);
         oled.update();
-        while(1);
       } else if(send_fail == true) {
         send_fail = false;
         oled.fill_page(7);
