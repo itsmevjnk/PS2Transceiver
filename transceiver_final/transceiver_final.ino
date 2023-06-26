@@ -557,6 +557,7 @@ void setup() {
   while(1) {
     chklist_wait();
     if(radio.begin()) {
+      radio.enableDynamicPayloads();
       radio.setChannel(radio_channel);
       radio.setDataRate((rf24_datarate_e) radio_rate);
       radio.openWritingPipe(radio_addr_trx);
@@ -735,9 +736,16 @@ void loop() {
 #endif
 
       if(radio.write(trx_buf, trx_len) == false) {
+        oled.tty_y = 7; oled.text_invert = true;
+        if(!send_fail) {
+          oled.tty_x = 0;
+          printf_P(PSTR("Resp. failure (ID %04X)"), pktid);
+        } else {
+          oled.tty_x = 18;
+          printf_P(PSTR("%04X"), pktid);
+        }
         send_fail = true;
-        oled.tty_x = 0; oled.tty_y = 7; oled.text_invert = true;
-        printf_P(PSTR("Resp. failure (ID %04X)"), pktid);
+        oled.text_invert = false;
         oled.update();
       } else if(send_fail == true) {
         send_fail = false;
