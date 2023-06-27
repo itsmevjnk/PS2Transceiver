@@ -32,8 +32,10 @@
 #define EEP_ADDR_CHANNEL        0
 #define EEP_ADDR_DRATE          1
 #define EEP_ADDR_RAPRE          2
+#define EEP_ADDR_PALVL          6
 
 #define LED_ACTY                5
+#define LED_ERROR               4
 
 SSD1306 oled;
 
@@ -64,11 +66,21 @@ void chklist_wait() {
 //#define RADIO_CHANNEL_OVR 40
 //#define RADIO_RATE_OVR    1
 //#define RADIO_ADDR_OVR    '\0', 'R', 'B', '0', '1'
+//#define RADIO_PALVL_OVR   RF24_PA_MIN
 
-uint8_t radio_channel = 0, radio_rate = 0;
+uint8_t radio_channel = 0, radio_rate = 0, radio_palvl = 0;
 uint8_t radio_addr_robot[5], radio_addr_trx[5];
 
 bool radio_pvar = false; // set if nRF24L01+ is detected
+
+void radio_post_init() {
+  radio.setPALevel(radio_palvl);
+  radio.setChannel(radio_channel);
+  radio.setDataRate((rf24_datarate_e) radio_rate);
+  radio.openWritingPipe(radio_addr_trx);
+  radio.openReadingPipe(1, radio_addr_robot);
+  radio.startListening();
+}
 
 /*
 void prog_print_nibble(uint8_t i_byte, bool i_nib) {
@@ -155,7 +167,7 @@ void menu_loop() {
 }
 
 /* radio config */
-uint8_t config_sel = 0; // 0 = radio channel, 1 = data rate, 2 = address prefix
+uint8_t config_sel = 0; // 0 = radio channel, 1 = data rate, 2 = address prefix, 3 = PA level
 uint8_t config_sel_sub = 255; // 255 = scrolling through selections, 0-254 = config sub-selection
 
 char config_radio_rates[3][5] = {"  1M", "  2M", "250k"};
@@ -185,6 +197,11 @@ void config_print(uint8_t sel, uint8_t sub) {
         oled.text_invert = false;
       }
       break;
+    case 3: // PA level
+      if(sub != 255) oled.text_invert = true;
+      oled.tty_x = SSD1306_TEXT_WIDTH - 1; oled.tty_y = 4;
+      printf_P(PSTR("%d"), radio_palvl);
+      if(sub != 255) oled.text_invert = false;
   }
 }
 
@@ -201,10 +218,11 @@ void config_loop() {
     config_sel = 0; config_sel_sub = 255;
     for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
     oled.tty_x = 0; oled.tty_y = 1;
-    printf_P(PSTR("  Channel:\n  Data rate:\n  Addr. pre.:"));
+    printf_P(PSTR("  Channel:\n  Data rate:\n  Addr. pre.:\n  PA level:"));
     config_print(0, 255);
     config_print(1, 255);
     config_print(2, 255);    
+    config_print(3, 255);
     disp_update = true; menu_switch = false;
 //    radio_channel_old = radio_channel;
 //    radio_rate_old = radio_rate;
@@ -223,10 +241,14 @@ void config_loop() {
       }
     } else config_sel_sub = (config_sel_sub == 255) ? 0 : 255;
     uint8_t i;
-    switch(config_sel) {
-      case 0: EEPROM.update(EEP_ADDR_CHANNEL, radio_channel); break;
-      case 1: EEPROM.update(EEP_ADDR_DRATE, radio_rate); break;
-      case 2: for(i = 0; i < 4; i++) EEPROM.update(EEP_ADDR_RAPRE + i, radio_addr_robot[i + 1]); break;
+    if(config_sel_sub == 255) {
+      /* save config */
+      switch(config_sel) {
+        case 0: EEPROM.update(EEP_ADDR_CHANNEL, radio_channel); break;
+        case 1: EEPROM.update(EEP_ADDR_DRATE, radio_rate); break;
+        case 2: for(i = 0; i < 4; i++) EEPROM.update(EEP_ADDR_RAPRE + i, radio_addr_robot[i + 1]); break;
+        case 3: EEPROM.update(EEP_ADDR_PALVL, radio_palvl); break;
+      }
     }
     reprint = true;
   }
@@ -261,6 +283,13 @@ void config_loop() {
             reprint = true;
           }
           break;
+        case 3:
+          if(radio_palvl < 3) {
+            radio_palvl++;
+            reprint = true;
+            radio.setPALevel(radio_palvl);
+          }
+          break;
       }
     }
   }
@@ -268,7 +297,7 @@ void config_loop() {
   if((buttons & (1 << 2)) && !(buttons & (1 << 6))) {
     /* DOWN */
     if(config_sel_sub == 255) {
-      if(config_sel < 2) config_sel++;
+      if(config_sel < 3) config_sel++;
     } else {
       uint8_t t;
       switch(config_sel) {
@@ -301,6 +330,13 @@ void config_loop() {
             radio.startListening();
           }
           break;
+        case 3:
+          if(radio_palvl > 0) {
+            radio_palvl--;
+            reprint = true;
+            radio.setPALevel(radio_palvl);
+          }
+          break;
       }
     }
   }
@@ -330,7 +366,7 @@ void export_loop() {
     export_attempts = 0; export_ok = 0;
     for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
     oled.tty_x = 0; oled.tty_y = 1;
-    printf_P(PSTR("Exporting to EEPROM:\n    %02X %02X %02X %02X %02X %02X\nPlug EEPROM and press OK"), radio_channel, radio_rate, radio_addr_robot[1], radio_addr_robot[2], radio_addr_robot[3], radio_addr_robot[4]);
+    printf_P(PSTR("Exporting to EEPROM:\n  %02X %02X %02X %02X %02X %02X %02X\nPlug EEPROM and press OK"), radio_channel, radio_rate, radio_addr_robot[1], radio_addr_robot[2], radio_addr_robot[3], radio_addr_robot[4], radio_palvl);
     oled.tty_x = 0; oled.tty_y = 6;
     printf_P(PSTR("Prg'd:         PrgOk:"));
     menu_switch = false; disp_update = true; export_update = true;
@@ -344,6 +380,7 @@ void export_loop() {
     Wire.write(radio_channel);
     Wire.write(radio_rate);
     for(uint8_t i = 0; i < 4; i++) Wire.write(radio_addr_robot[i+1]);
+    Wire.write(radio_palvl);
     export_t = 0;
     if(Wire.endTransmission() != 0) {
       oled.tty_x = 0; oled.tty_y = 7;
@@ -361,12 +398,13 @@ void export_loop() {
     Wire.beginTransmission(EEP_ADDR);
     Wire.write(0);
     Wire.endTransmission();
-    Wire.requestFrom(EEP_ADDR, 6, true);
+    Wire.requestFrom(EEP_ADDR, 7, true);
     uint8_t channel = Wire.read();
     uint8_t rate = Wire.read();
     uint8_t addr[4]; for(uint8_t i = 0; i < 4; i++) addr[i] = Wire.read();
+    uint8_t palvl = Wire.read();
     oled.tty_x = 0; oled.tty_y = 7;
-    if(channel != radio_channel || rate != radio_rate || memcmp(addr, &radio_addr_robot[1], 4) != 0) printf_P(PSTR("EEPROM verify failed"));
+    if(channel != radio_channel || rate != radio_rate || memcmp(addr, &radio_addr_robot[1], 4) != 0 || palvl != radio_palvl) printf_P(PSTR("EEPROM verify failed"));
     else {
       export_ok++;
       printf_P(PSTR("EEPROM programmed"));
@@ -383,7 +421,7 @@ void export_loop() {
 
 /* EEPROM import */
 bool import_read = false, import_done = false;
-uint8_t import_channel, import_rate, import_addr[4];
+uint8_t import_channel, import_rate, import_addr[4], import_palvl;
 
 void import_loop() {
   if(menu_switch) {
@@ -405,13 +443,14 @@ void import_loop() {
         oled.fill_page(7);
         printf_P(PSTR("EEPROM not detected"));
       } else {
-        Wire.requestFrom(EEP_ADDR, 6, true);
+        Wire.requestFrom(EEP_ADDR, 7, true);
         import_channel = Wire.read();
         import_rate = Wire.read();
         for(uint8_t i = 0; i < 4; i++) import_addr[i] = Wire.read();
+        import_palvl = Wire.read();
         for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
         oled.tty_x = 0; oled.tty_y = 1;
-        printf_P(PSTR("Importing to MCU:\n    %02X %02X %02X %02X %02X %02X\nUP   - Import\nDOWN - Cancel"), import_channel, import_rate, import_addr[1], import_addr[2], import_addr[3], import_addr[4]);
+        printf_P(PSTR("Importing to MCU:\n  %02X %02X %02X %02X %02X %02X %02X\nUP   - Import\nDOWN - Cancel"), import_channel, import_rate, import_addr[1], import_addr[2], import_addr[3], import_addr[4], import_palvl);
         import_read = true;
       }
       disp_update = true;
@@ -432,11 +471,17 @@ void import_loop() {
       if(memcmp(import_addr, &radio_addr_robot[1], 4) != 0) {
         memcpy(&radio_addr_robot[1], import_addr, 4);
         memcpy(&radio_addr_trx[1], import_addr, 4);
+        for(uint8_t i = 0; i < 4; i++) EEPROM.update(EEP_ADDR_RAPRE + i, import_addr[i]);
         radio.stopListening();
         radio.openWritingPipe(radio_addr_trx);
         radio.closeReadingPipe(1);
         radio.openReadingPipe(1, radio_addr_robot);
         radio.startListening();
+      }
+      if(radio_palvl != import_palvl) {
+        radio_palvl = import_palvl;
+        EEPROM.update(EEP_ADDR_PALVL, radio_palvl);
+        radio.setPALevel(radio_palvl);
       }
       for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
       oled.tty_x = 0; oled.tty_y = 1;
@@ -629,6 +674,8 @@ void spec_loop() {
 }
 
 void disp_loop() {
+  oled.text_invert = false;
+   
   buttons <<= 4;
   buttons |= ((digitalRead(BTN_MODE) == LOW) ? (1 << 0) : 0) | ((digitalRead(BTN_UP) == LOW) ? (1 << 1) : 0) | ((digitalRead(BTN_DOWN) == LOW) ? (1 << 2) : 0) | ((digitalRead(BTN_OK) == LOW) ? (1 << 3) : 0);
 #ifdef BUTTONS_DEBUG
@@ -642,11 +689,7 @@ void disp_loop() {
       // exiting from spectrum analyzer
       trx_halt = false;
       radio.begin(); // reinitialize
-      radio.setChannel(radio_channel);
-      radio.setDataRate((rf24_datarate_e) radio_rate);
-      radio.openWritingPipe(radio_addr_trx);
-      radio.openReadingPipe(1, radio_addr_robot);
-      radio.startListening();
+      radio_post_init();
     }
     menu_redraw = true;
     menu_sel = 1;
@@ -686,19 +729,32 @@ void setup() {
   pinMode(LED_ACTY, OUTPUT); digitalWrite(LED_ACTY, HIGH);
 #endif
 
+#ifdef LED_ERROR
+  pinMode(LED_ERROR, OUTPUT); digitalWrite(LED_ERROR, LOW);
+#endif
+
   stdout = fdevopen(&stdout_write, NULL);
 
   Wire.begin();
   Wire.setClock(400000);
   oled.init(); oled.fill(); oled.update();
 
+
 #ifndef RADIO_CHANNEL_OVR
   radio_channel = EEPROM.read(EEP_ADDR_CHANNEL);
+  if(radio_channel > 125) {
+    radio_channel = 76;
+    EEPROM.update(EEP_ADDR_CHANNEL, radio_channel);
+  }
 #else
   radio_channel = RADIO_CHANNEL_OVR;
 #endif
 #ifndef RADIO_RATE_OVR
   radio_rate = EEPROM.read(EEP_ADDR_DRATE);
+  if(radio_rate > 2) {
+    radio_rate = 1;
+    EEPROM.update(EEP_ADDR_DRATE, radio_rate);
+  }
 #else
   radio_rate = RADIO_RATE_OVR;
 #endif
@@ -713,7 +769,16 @@ void setup() {
     radio_addr_trx[i] = radio_addr[i];
   }
   radio_addr_robot[0] = 'R'; radio_addr_trx[0] = 'T';
-  
+#ifndef RADIO_PALVL_OVR
+  radio_palvl = EEPROM.read(EEP_ADDR_PALVL);
+  if(radio_palvl > 3) {
+    radio_rate = 0;
+    EEPROM.update(EEP_ADDR_PALVL, radio_palvl);
+  }
+#else
+  radio_palvl = RADIO_PALVL_OVR;
+#endif
+
   printf_P(PSTR("INIT CHECKLIST\n")); oled.update();
 
   printf_P(PSTR("PS2 controller"));
@@ -738,11 +803,7 @@ void setup() {
     chklist_wait();
     if(radio.begin()) {
       //radio.enableDynamicPayloads();
-      radio.setChannel(radio_channel);
-      radio.setDataRate((rf24_datarate_e) radio_rate);
-      radio.openWritingPipe(radio_addr_trx);
-      radio.openReadingPipe(1, radio_addr_robot);
-      radio.startListening();
+      radio_post_init();
       chklist_ok();
       break;
     }
@@ -816,6 +877,8 @@ void correct_stick() {
 // #define PAYLOAD_DEBUG
 
 bool send_fail = false;
+
+// #define ERROR_OLED
 
 void loop() {
   // put your main code here, to run repeatedly:
@@ -922,6 +985,8 @@ void loop() {
 
       //radio.setPayloadSize(trx_len);
       if(radio.write(trx_buf, trx_len) == false) {
+        send_fail = true;
+#ifdef ERROR_OLED
         oled.tty_y = 7; oled.text_invert = true;
         if(!send_fail) {
           oled.tty_x = 0;
@@ -930,13 +995,21 @@ void loop() {
           oled.tty_x = 18;
           printf_P(PSTR("%04X"), pktid);
         }
-        send_fail = true;
         oled.text_invert = false;
         oled.update();
+#endif
+#ifdef LED_ERROR
+        digitalWrite(LED_ERROR, HIGH);
+#endif
       } else if(send_fail == true) {
         send_fail = false;
+#ifdef ERROR_OLED
         oled.fill_page(7);
         oled.update();
+#endif
+#ifdef LED_ERROR
+        digitalWrite(LED_ERROR, LOW);
+#endif
       }
     }
     
