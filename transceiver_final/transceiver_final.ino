@@ -74,6 +74,8 @@ uint8_t radio_addr_robot[5], radio_addr_trx[5];
 bool radio_pvar = false; // set if nRF24L01+ is detected
 
 void radio_post_init() {
+  radio.disableAckPayload();
+  radio.setAutoAck(false);
   radio.setPALevel(radio_palvl);
   radio.setChannel(radio_channel);
   radio.setDataRate((rf24_datarate_e) radio_rate);
@@ -880,13 +882,38 @@ bool send_fail = false;
 
 // #define ERROR_OLED
 
+/* duration for failure modes */
+#define FAIL_DUR_AVAILABLE        50 // data always available
+#define FAIL_DUR_CONFIG           1000 // config verification check
+
+uint32_t config_timer = 0;
+
 void loop() {
+  if(radio.failureDetected) {
+#ifdef LED_ERROR
+    digitalWrite(LED_ERROR, HIGH);
+#endif
+    radio.begin();
+    radio_post_init();
+    radio.failureDetected = false;
+#ifdef LED_ERROR
+    digitalWrite(LED_ERROR, LOW);
+#endif
+  }
+  
   // put your main code here, to run repeatedly:
 
   disp_loop();
 
   if(trx_halt) return;
   
+  if(millis() - config_timer > FAIL_DUR_CONFIG) {
+    if(radio.getDataRate() != radio_rate || radio.getChannel() != radio_channel) {
+      Serial.println(F("FAIL_DUR_CONFIG"));
+      radio.failureDetected = true;
+      return;
+    }
+  }
   /*
   if(digitalRead(BTN_MODE) == LOW) {
     oled.tty_x = 0; oled.tty_y = SSD1306_TEXT_HEIGHT - 1;
@@ -910,9 +937,18 @@ void loop() {
   */
   uint8_t pipe;
   if(radio.available(&pipe)) {
+    uint32_t fail_timer = millis();
+    while(radio.available()) {
+      if(millis() - fail_timer > FAIL_DUR_AVAILABLE) {
+        Serial.println(F("FAIL_DUR_AVAILABLE"));
+        radio.failureDetected = true;
+        return;
+      }
+      trx_len = radio.getPayloadSize();
+      radio.read(trx_buf, trx_len);
+    }
+    
     acty_on();
-    trx_len = radio.getPayloadSize();
-    radio.read(trx_buf, trx_len);
     
 #ifdef PAYLOAD_DEBUG
     Serial.print(trx_len, DEC);
