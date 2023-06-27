@@ -68,6 +68,8 @@ void chklist_wait() {
 uint8_t radio_channel = 0, radio_rate = 0;
 uint8_t radio_addr_robot[5], radio_addr_trx[5];
 
+bool radio_pvar = false; // set if nRF24L01+ is detected
+
 /*
 void prog_print_nibble(uint8_t i_byte, bool i_nib) {
   oled.tty_x = (i_byte % 8) * 3 + ((i_nib) ? 1 : 0);
@@ -115,7 +117,7 @@ void acty_off() {
 }
 
 /* GUI loop */
-uint8_t disp_mode = 0; // 0 = menu, 1 = radio config, 2 = copy to EEPROM, 3 = copy from EEPROM
+uint8_t disp_mode = 0; // 0 = menu, 1 = radio config, 2 = copy to EEPROM, 3 = copy from EEPROM, 4 = spectrum analyzer
 bool disp_update = false; // set to update display by the end of disp_loop()
 uint8_t buttons = 0; // lower 4 bits = current buttons (menu, up, down, ok), upper 4 bits = last
 
@@ -132,12 +134,12 @@ void menu_loop() {
   if(menu_redraw) {
     for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
     oled.tty_x = 0; oled.tty_y = 1;
-    printf_P(PSTR("  Radio config\n  Export config\n  Import config"));
+    printf_P(PSTR("  Radio config\n  Export config\n  Import config\n  Spectrum analyzer"));
     menu_redraw = false; disp_update = true;
   }
 
   if((buttons & (1 << 1)) && !(buttons & (1 << 5)) && menu_sel > 1) menu_sel--;
-  if((buttons & (1 << 2)) && !(buttons & (1 << 6)) && menu_sel < 3) menu_sel++;
+  if((buttons & (1 << 2)) && !(buttons & (1 << 6)) && menu_sel < 4) menu_sel++;
 
   if((buttons & (1 << 3)) && !(buttons & (1 << 7))) {
     disp_mode = menu_sel;
@@ -459,6 +461,173 @@ void import_loop() {
   }
 }
 
+/* spectrum analyzer */
+#define SPEC_GLITCH_STREAK        8 // minimum streak length to be considered a bug
+
+bool trx_halt = false; // set to halt normal TRX operations
+
+uint8_t spec_channel = 0, spec_strength = 0;
+uint32_t spec_n = 0;
+uint8_t spec_mode = 0; // 0 = accumulative (ACC), 1 = sliding window (SLW), 2 = waterfall (WAT), 3 = current strength only (CUR)
+uint8_t spec_channel_scan = 0;
+
+uint8_t sig_current[16]; // current signal spectrum
+uint8_t sig_streak_n = 0, sig_streak_start = 0; // signal streak length and start channel (for radio glitch detection)
+
+void spec_loop() {
+  uint8_t last_channel = (menu_switch) ? 255 : spec_channel;
+  uint8_t last_strength = (menu_switch) ? 255 : spec_strength;
+  uint8_t last_mode = (menu_switch) ? 255 : spec_mode;
+  
+  if(menu_switch) {
+    trx_halt = true;
+    spec_n = 0;
+    for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
+    oled.tty_y = 7; oled.tty_x = 0; printf_P(PSTR("U/D:Move ptr OK:SA mode"));
+    oled.tty_y = 6; oled.tty_x = 0; 
+    printf_P(PSTR("0000 "));
+    if(radio_pvar) printf_P(PSTR("RPD"));
+    else printf_P(PSTR("CAR"));
+    printf_P(PSTR(" Ch."));
+    menu_switch = false;
+
+    spec_channel_scan = 0;
+  }
+
+  if((buttons & (1 << 3)) && !(buttons & (1 << 7))) {
+    /* OK */
+    spec_mode = (spec_mode + 1) % 4;
+  }
+
+  if((buttons & (1 << 1)) && !(buttons & (1 << 5))) {
+    /* UP */
+    spec_channel = (spec_channel + 1) % 126;
+  }
+
+  if((buttons & (1 << 2)) && !(buttons & (1 << 6))) {
+    /* DOWN */
+    spec_channel = (spec_channel == 0) ? 125 : (spec_channel - 1);
+  }
+
+  /* scan cycle */
+  if(spec_channel_scan == 0) {
+    for(uint8_t i = 0; i < 16; i++) sig_current[i] = 0;
+  }
+  
+  if(spec_channel_scan < 126) {
+    radio.setChannel(spec_channel_scan);
+    radio.startListening();
+    delayMicroseconds(200); // allow for some time to receive
+    bool sig = (radio_pvar) ? radio.testRPD() : radio.testCarrier(); // check for any >-64dBm signal (on + variant) or carrier only (non-+ variant)
+    radio.stopListening();
+    if(sig) {
+      acty_on();
+      sig_current[spec_channel_scan / 8] |= (1 << (spec_channel_scan % 8));
+      if(sig_streak_n == 0) sig_streak_start = spec_channel_scan;
+      sig_streak_n++;
+    } else {
+      acty_off();
+      sig_streak_n = 0;
+    }
+    spec_channel_scan++;
+  }
+
+  if(spec_channel_scan == 126) {
+    disp_update = true;
+    if(sig_streak_n >= SPEC_GLITCH_STREAK) {
+      uint8_t mask[8] = {0b00000000, 0b00000001, 0b00000011, 0b00000111, 0b00001111, 0b00011111, 0b00111111, 0b01111111};
+      uint8_t idx = (sig_streak_start + 1) / 8, off = (sig_streak_start + 1) % 8;
+      sig_current[idx] &= mask[off];
+      for(uint8_t i = idx + 1; i < 16; i++) sig_current[i] = 0;
+      radio.begin();
+    }
+
+    spec_n++;
+    Serial.print(spec_n, DEC);
+    Serial.print(':');
+    for(uint8_t i = 0; i < 16; i++) {
+      Serial.print(sig_current[i], HEX);
+      if(i != 15) Serial.print(',');
+      else Serial.println();
+    }
+    oled.tty_y = 6; oled.tty_x = 0; printf_P(PSTR("%04X"), spec_n);
+    
+    if(spec_mode == 3) {
+      /* current strength only */
+      for(uint8_t ch = 0; ch < 126; ch++) {
+        bool sig = (sig_current[ch / 8] & (1 << (ch % 8)));
+        for(uint8_t y = (SSD1306_HEIGHT - 20); y > (SSD1306_HEIGHT - 20) - 32; y--) oled.draw_pixel(ch + 1, y, sig);
+      }
+    } else if(spec_mode == 2) {
+      /* waterfall */
+      for(uint8_t y = (SSD1306_HEIGHT - 20) - 31; y < (SSD1306_HEIGHT - 20); y++) {
+        for(uint8_t x = 1; x < 127; x++) oled.draw_pixel(x, y, oled.get_pixel(x, y + 1));
+      }
+      for(uint8_t ch = 0; ch < 126; ch++) {
+        bool sig = (sig_current[ch / 8] & (1 << (ch % 8)));
+        oled.draw_pixel(ch + 1, (SSD1306_HEIGHT - 20), sig);
+      }
+    } else {
+      /* accumulative/sliding window (almost the same thing) */
+      for(uint8_t ch = 0; ch < 126; ch++) {
+        bool sig = (sig_current[ch / 8] & (1 << (ch % 8)));
+        if(sig) {
+          /* add a pixel */
+          for(uint8_t y = (SSD1306_HEIGHT - 20); y > (SSD1306_HEIGHT - 20) - 32; y--) {
+            if(!oled.get_pixel(ch + 1, y)) {
+              oled.draw_pixel(ch + 1, y);
+              break;
+            }
+          }
+        } else if(spec_mode == 1) {
+          /* remove pixel (only in sliding window) */
+          for(uint8_t y = (SSD1306_HEIGHT - 20) - 31; y <= (SSD1306_HEIGHT - 20); y++) {
+            if(oled.get_pixel(ch + 1, y)) {
+              oled.draw_pixel(ch + 1, y, false);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    spec_strength = 0;
+    for(uint8_t y = (SSD1306_HEIGHT - 20) - 31; y <= (SSD1306_HEIGHT - 20); y++) {
+      if(oled.get_pixel(spec_channel + 1, y)) spec_strength++;
+    }
+    
+    spec_channel_scan = 0;
+  }
+  
+  if(last_mode != spec_mode) {
+    disp_update = true;
+    oled.tty_y = 6; oled.tty_x = SSD1306_TEXT_WIDTH - 3;
+    switch(spec_mode) {
+      case 0: printf_P(PSTR("ACC")); break;
+      case 1: printf_P(PSTR("SLW")); break;
+      case 2: printf_P(PSTR("WAT")); break;
+      case 3: printf_P(PSTR("CUR")); break;
+    }
+    for(uint8_t x = 1; x < 127; x++) {
+      for(uint8_t y = (SSD1306_HEIGHT - 20); y > (SSD1306_HEIGHT - 20) - 32; y--) oled.draw_pixel(x, y, false);
+    }
+  }
+
+  if(last_channel != spec_channel) {
+    disp_update = true;
+    oled.tty_y = 6; oled.tty_x = 12;
+    printf_P(PSTR("%3d"), spec_channel);
+    if(last_channel != 255) oled.draw_pixel(last_channel + 1, (SSD1306_HEIGHT - 20) + 2, false);
+    oled.draw_pixel(spec_channel + 1, (SSD1306_HEIGHT - 20) + 2);
+  }
+
+  if(last_strength != spec_strength) {
+    disp_update = true;
+    oled.tty_y = 6; oled.tty_x = SSD1306_TEXT_WIDTH - 6;
+    printf_P(PSTR("%2d"), spec_strength);
+  }
+}
+
 void disp_loop() {
   buttons <<= 4;
   buttons |= ((digitalRead(BTN_MODE) == LOW) ? (1 << 0) : 0) | ((digitalRead(BTN_UP) == LOW) ? (1 << 1) : 0) | ((digitalRead(BTN_DOWN) == LOW) ? (1 << 2) : 0) | ((digitalRead(BTN_OK) == LOW) ? (1 << 3) : 0);
@@ -469,6 +638,16 @@ void disp_loop() {
 #endif
 
   if((buttons & (1 << 0)) && !(buttons & (1 << 4))) {
+    if(disp_mode == 4) {
+      // exiting from spectrum analyzer
+      trx_halt = false;
+      radio.begin(); // reinitialize
+      radio.setChannel(radio_channel);
+      radio.setDataRate((rf24_datarate_e) radio_rate);
+      radio.openWritingPipe(radio_addr_trx);
+      radio.openReadingPipe(1, radio_addr_robot);
+      radio.startListening();
+    }
     menu_redraw = true;
     menu_sel = 1;
     disp_mode = 0;
@@ -479,6 +658,7 @@ void disp_loop() {
     case 1: config_loop(); break;
     case 2: export_loop(); break;
     case 3: import_loop(); break;
+    case 4: spec_loop(); break;
     default:
       disp_mode = 0;
       menu_redraw = true;
@@ -573,7 +753,10 @@ void setup() {
 #endif
 
   oled.tty_x = 0; oled.tty_y = 0; oled.fill_page(0);
-  printf_P(PSTR("PS2 TRANSCEIVER")); oled.update();
+  printf_P(PSTR("PS2 TRANSCEIVER"));
+  radio_pvar = radio.isPVariant();
+  if(radio_pvar) printf_P(PSTR(" (+)"));
+  oled.update();
   acty_off();
 }
 
@@ -630,7 +813,7 @@ void correct_stick() {
 }
 #endif
 
-#define PAYLOAD_DEBUG
+// #define PAYLOAD_DEBUG
 
 bool send_fail = false;
 
@@ -638,6 +821,8 @@ void loop() {
   // put your main code here, to run repeatedly:
 
   disp_loop();
+
+  if(trx_halt) return;
   
   /*
   if(digitalRead(BTN_MODE) == LOW) {
