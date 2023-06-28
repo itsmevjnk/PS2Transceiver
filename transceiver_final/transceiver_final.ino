@@ -148,12 +148,12 @@ void menu_loop() {
   if(menu_redraw) {
     for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
     oled.tty_x = 0; oled.tty_y = 1;
-    printf_P(PSTR("  Radio config\n  Export config\n  Import config\n  Spectrum analyzer"));
+    printf_P(PSTR("  Radio config\n  Export config\n  Import config\n  Spectrum analyzer\n  Benchmark (WIP)\n  Statistics"));
     menu_redraw = false; disp_update = true;
   }
 
   if((buttons & (1 << 1)) && !(buttons & (1 << 5)) && menu_sel > 1) menu_sel--;
-  if((buttons & (1 << 2)) && !(buttons & (1 << 6)) && menu_sel < 4) menu_sel++;
+  if((buttons & (1 << 2)) && !(buttons & (1 << 6)) && menu_sel < 6) menu_sel++;
 
   if((buttons & (1 << 3)) && !(buttons & (1 << 7))) {
     disp_mode = menu_sel;
@@ -675,6 +675,43 @@ void spec_loop() {
   }
 }
 
+/* benchmark */
+// TODO
+
+/* statistics */
+uint16_t stats_recv = 0, stats_fail_dup = 0, stats_fail_radio = 0, stats_ps2 = 0, stats_fail_ps2 = 0;
+void stats_loop() {
+  bool update = (menu_switch) ? true : ((buttons & (1 << 3)) && !(buttons & (1 << 7)));
+  
+  if(menu_switch) {
+    for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
+    oled.tty_x = 0; oled.tty_y = 1;
+    printf_P(PSTR("Recv'd packets:\nDuplicate pkts:\nRadio fails:\nPS2 ctrlr polls:\nPS2 ctrlr fails:"));
+    oled.tty_x = 0; oled.tty_y = 7;
+    printf_P(PSTR("OK:Update  DOWN:Reset"));
+    menu_switch = false; disp_update = true;
+  }
+
+  if((buttons & (1 << 2)) && !(buttons & (1 << 6))) {
+    /* DOWN */
+    stats_recv = 0;
+    stats_fail_dup = 0;
+    stats_fail_radio = 0;
+    stats_ps2 = 0;
+    stats_fail_ps2 = 0;
+    update = true;
+  }
+    
+  if(update) {
+    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 1; printf_P(PSTR("%5d"), stats_recv);
+    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 2; printf_P(PSTR("%5d"), stats_fail_dup);
+    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 3; printf_P(PSTR("%5d"), stats_fail_radio);
+    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 4; printf_P(PSTR("%5d"), stats_ps2);
+    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 5; printf_P(PSTR("%5d"), stats_fail_ps2);
+    disp_update = true;
+  }
+}
+
 void disp_loop() {
   oled.text_invert = false;
    
@@ -704,6 +741,7 @@ void disp_loop() {
     case 2: export_loop(); break;
     case 3: import_loop(); break;
     case 4: spec_loop(); break;
+    case 6: stats_loop(); break;
     default:
       disp_mode = 0;
       menu_redraw = true;
@@ -890,6 +928,8 @@ uint32_t config_timer = 0;
 
 void loop() {
   if(radio.failureDetected) {
+    stats_fail_radio++;
+    
 #ifdef LED_ERROR
     digitalWrite(LED_ERROR, HIGH);
 #endif
@@ -947,7 +987,8 @@ void loop() {
       trx_len = radio.getPayloadSize();
       radio.read(trx_buf, trx_len);
     }
-    
+
+    stats_recv++;
     acty_on();
     
 #ifdef PAYLOAD_DEBUG
@@ -959,7 +1000,7 @@ void loop() {
     }
     Serial.println();
 #endif
-
+    
     uint16_t pktid = trx_buf[0] | (trx_buf[1] << 8);
     if(pktid != last_pktid) {
       // ignore duplicates
@@ -970,7 +1011,9 @@ void loop() {
         case 0x00: // loopback test
           break;
         case 0x02:
+          stats_ps2++;
           if(ps2.read_gamepad((trx_buf[3] != 0), trx_buf[4]) == false) {
+            stats_fail_ps2++;
             trx_buf[2] = 0xF2;
             trx_len = 3;
           } else {
@@ -1020,7 +1063,10 @@ void loop() {
 #endif
 
       //radio.setPayloadSize(trx_len);
+      radio.write(trx_buf, trx_len); // fail condition only exists if auto ack is enabled
+/*
       if(radio.write(trx_buf, trx_len) == false) {
+        stats_fail_resp++;
         send_fail = true;
 #ifdef ERROR_OLED
         oled.tty_y = 7; oled.text_invert = true;
@@ -1047,7 +1093,8 @@ void loop() {
         digitalWrite(LED_ERROR, LOW);
 #endif
       }
-    }
+*/
+    } else stats_fail_dup++;
     
     radio.startListening();
     acty_off();
