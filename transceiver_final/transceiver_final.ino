@@ -679,35 +679,92 @@ void spec_loop() {
 // TODO
 
 /* statistics */
-uint16_t stats_recv = 0, stats_fail_dup = 0, stats_fail_radio = 0, stats_ps2 = 0, stats_fail_ps2 = 0;
+uint32_t stats_recv = 0, stats_fail_miss = 0,stats_fail_dup = 0, stats_fail_radio = 0;
+uint32_t stats_pkt_tproc_min = 0xFFFFFFFF, stats_pkt_tproc = 0, stats_pkt_tproc_max = 0; // packet processing time
+uint32_t stats_pkt_tpp_min = 0xFFFFFFFF, stats_pkt_tpp = 0, stats_pkt_tpp_max = 0; // time between packets
+uint16_t stats_ps2 = 0, stats_fail_ps2 = 0;
+uint8_t stats_page = 0; // 0 = packet info, 1 = packet timing, 2 = PS2 controller info
+bool stats_page_change = false;
+
 void stats_loop() {
-  bool update = (menu_switch) ? true : ((buttons & (1 << 3)) && !(buttons & (1 << 7)));
+  bool update = ((buttons & (1 << 3)) && !(buttons & (1 << 7)));
   
   if(menu_switch) {
-    for(uint8_t i = 1; i < 8; i++) oled.fill_page(i);
-    oled.tty_x = 0; oled.tty_y = 1;
-    printf_P(PSTR("Recv'd packets:\nDuplicate pkts:\nRadio fails:\nPS2 ctrlr polls:\nPS2 ctrlr fails:"));
+    stats_page_change = true;
+    oled.fill_page(7);
     oled.tty_x = 0; oled.tty_y = 7;
-    printf_P(PSTR("OK:Update  DOWN:Reset"));
-    menu_switch = false; disp_update = true;
+    printf_P(PSTR("U/D:Page OK:Update"));
+    oled.tty_x = SSD1306_TEXT_WIDTH - 3; oled.tty_y = 7;
+    putchar('/'); putchar('3');
+    menu_switch = false;
+    update = true;
   }
-
+  
+  if((buttons & (1 << 1)) && !(buttons & (1 << 5))) {
+    /* UP */
+    if(stats_page > 0) {
+      stats_page--;
+      stats_page_change = true;
+    }
+  }
+  
   if((buttons & (1 << 2)) && !(buttons & (1 << 6))) {
     /* DOWN */
-    stats_recv = 0;
-    stats_fail_dup = 0;
-    stats_fail_radio = 0;
-    stats_ps2 = 0;
-    stats_fail_ps2 = 0;
-    update = true;
+    if(stats_page < 2) {
+      stats_page++;
+      stats_page_change = true;
+    }
+  }
+  
+  
+  if(stats_page_change) {
+    oled.tty_x = SSD1306_TEXT_WIDTH - 4; oled.tty_y = 7; printf_P(PSTR("%d"), stats_page+1);
+    oled.tty_x = 0; oled.tty_y = 1;
+    for(uint8_t i = 1; i < 7; i++) oled.fill_page(i);
+    switch(stats_page) {
+      case 0:
+        printf_P(PSTR("Recv'd packets:\nMissed pkts:\nPkt fail rate:\nDuplicate pkts:\nRadio fails:"));
+        oled.tty_x = SSD1306_TEXT_WIDTH - 1; oled.tty_y = 3; putchar('%');
+        break;
+      case 1:
+        printf_P(PSTR("Time between pkts:     ms  Min:    ms Max:    ms\nPkt proc. time:        ms  Min:    ms Max:    ms"));
+        break;
+      case 2:
+        printf_P(PSTR("PS2 ctrlr polls:\nPS2 ctrlr fails:"));
+        break;
+    }
+    stats_page_change = false; update = true;
   }
     
   if(update) {
-    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 1; printf_P(PSTR("%5d"), stats_recv);
-    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 2; printf_P(PSTR("%5d"), stats_fail_dup);
-    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 3; printf_P(PSTR("%5d"), stats_fail_radio);
-    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 4; printf_P(PSTR("%5d"), stats_ps2);
-    oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 5; printf_P(PSTR("%5d"), stats_fail_ps2);
+    float t;
+    switch(stats_page) {
+      case 0: 
+        oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 1; printf_P(PSTR("%5u"), stats_recv);
+        oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 2; printf_P(PSTR("%5u"), stats_fail_miss);
+        t = 100 * (float)((float)(stats_fail_miss + stats_fail_dup) / (float)(stats_recv + stats_fail_miss));
+        oled.tty_x = SSD1306_TEXT_WIDTH - 7; oled.tty_y = 3; printf_P(PSTR("%3u.%02u"), (uint8_t)t, (uint8_t)((t - (uint8_t)t)*100));
+        oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 4; printf_P(PSTR("%5u"), stats_fail_dup);
+        oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 5; printf_P(PSTR("%5u"), stats_fail_radio);
+        break;
+      case 1:
+        oled.tty_x = 19; oled.tty_y = 1; printf_P(PSTR("%4u"), stats_pkt_tpp);
+        if(stats_pkt_tpp_min != 0xFFFFFFFF) {
+          oled.tty_x = 6; oled.tty_y = 2; printf_P(PSTR("%4u"), stats_pkt_tpp_min);
+        }
+        oled.tty_x = 17; oled.tty_y = 2; printf_P(PSTR("%4u"), stats_pkt_tpp_max);
+        oled.tty_x = 19; oled.tty_y = 3; printf_P(PSTR("%4u"), stats_pkt_tproc);
+        if(stats_pkt_tproc_min != 0xFFFFFFFF) {
+          oled.tty_x = 6; oled.tty_y = 4; printf_P(PSTR("%4u"), stats_pkt_tproc_min);
+        }
+        oled.tty_x = 17; oled.tty_y = 4; printf_P(PSTR("%4u"), stats_pkt_tproc_max);
+        break;
+      case 2:
+        oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 1; printf_P(PSTR("%5u"), stats_ps2);
+        oled.tty_x = SSD1306_TEXT_WIDTH - 5; oled.tty_y = 2; printf_P(PSTR("%5u"), stats_fail_ps2);
+        break;
+    }
+        
     disp_update = true;
   }
 }
@@ -925,8 +982,12 @@ bool send_fail = false;
 #define FAIL_DUR_CONFIG           1000 // config verification check
 
 uint32_t config_timer = 0;
+uint32_t t_last_pkt = 0;
+
+#define PKT_MISS_MAX         100 // max number of missed packets to be counted as missed and not packet ID reset
 
 void loop() {
+  if(t_last_pkt == 0) t_last_pkt = millis();
   if(radio.failureDetected) {
     stats_fail_radio++;
     
@@ -1004,6 +1065,12 @@ void loop() {
     uint16_t pktid = trx_buf[0] | (trx_buf[1] << 8);
     if(pktid != last_pktid) {
       // ignore duplicates
+      uint32_t tpp = millis() - t_last_pkt;
+      stats_pkt_tpp = ((stats_pkt_tpp * (stats_recv - stats_fail_dup - 1)) + tpp) / (stats_recv - stats_fail_dup);
+      if(stats_pkt_tpp_min > tpp) stats_pkt_tpp_min = tpp;
+      if(stats_pkt_tpp_max < tpp) stats_pkt_tpp_max = tpp;
+      uint32_t tproc = millis();
+      if(!(last_pktid & (1 << 15)) && !(pktid & (1 << 15)) && (uint16_t)(pktid - last_pktid) > 1 && (uint16_t)(pktid - last_pktid) <= PKT_MISS_MAX && !(last_pktid == 0x7FFF && pktid == 0x0000)) stats_fail_miss += (uint16_t)(pktid - last_pktid);
       last_pktid = pktid;
       int i;
       // sprintf(str_buf, "Packet length: %d, header: %02X %02X %02X\n", trx_len, trx_buf[0], trx_buf[1], trx_buf[2]); Serial.print((char*)&str_buf);
@@ -1011,24 +1078,27 @@ void loop() {
         case 0x00: // loopback test
           break;
         case 0x02:
-          stats_ps2++;
-          if(ps2.read_gamepad((trx_buf[3] != 0), trx_buf[4]) == false) {
-            stats_fail_ps2++;
-            trx_buf[2] = 0xF2;
-            trx_len = 3;
-          } else {
-            trx_len = 21;
-            trx_buf[2] = 0x01;
+          if(millis() - ps2.t_last_att >= CTRL_PACKET_DELAY) {
+            // only poll PS2 controller if enough time has passed
+            stats_ps2++;
+            if(ps2.read_gamepad((trx_buf[3] != 0), trx_buf[4]) == false) {
+              stats_fail_ps2++;
+              trx_buf[2] = 0xF2;
+              trx_len = 3;
+              break;
+            }
+          }
+          trx_len = 21;
+          trx_buf[2] = 0x01;
 #ifdef ENABLE_PRESSURE_EMULATION
-            for(i = 3; i < 9; i++) trx_buf[i] = ps2.PS2data[i]; // copy packet over, ignoring pressure data (which is unavailable anyway)
-            emulate_pressure();
+          for(i = 3; i < 9; i++) trx_buf[i] = ps2.PS2data[i]; // copy packet over, ignoring pressure data (which is unavailable anyway)
+          emulate_pressure();
 #else
-            for(i = 3; i < 21; i++) trx_buf[i] = ps2.PS2data[i]; // copy packet over
+          for(i = 3; i < 21; i++) trx_buf[i] = ps2.PS2data[i]; // copy packet over
 #endif
 #ifdef ENABLE_JOYSTICK_CORRECTION
-            correct_stick();
+          correct_stick();
 #endif
-          }
           break;
         case 0x01:
           trx_len = 21;
@@ -1064,6 +1134,12 @@ void loop() {
 
       //radio.setPayloadSize(trx_len);
       radio.write(trx_buf, trx_len); // fail condition only exists if auto ack is enabled
+      tproc = millis() - tproc;
+      stats_pkt_tproc = ((stats_pkt_tproc * (stats_recv - stats_fail_dup - 1)) + tproc) / (stats_recv - stats_fail_dup);
+      if(stats_pkt_tproc_min > tproc) stats_pkt_tproc_min = tproc;
+      if(stats_pkt_tproc_max < tproc) stats_pkt_tproc_max = tproc;
+      
+      t_last_pkt = millis();
 /*
       if(radio.write(trx_buf, trx_len) == false) {
         stats_fail_resp++;
